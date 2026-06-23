@@ -151,6 +151,56 @@
       "Antarctica": [[-89, -180], [-60, 180]]
     };
 
+    const continentGeoJsonSources = {
+      "North America": [
+        "countries/canada.json",
+        "countries/usa.json",
+        "countries/mexico.json",
+        "countries/cuba.json",
+        "countries/bahamas.json"
+      ],
+      "South America": [
+        "countries/colombia.json",
+        "countries/venezuela.json",
+        "countries/brazil.json",
+        "countries/argentina.json",
+        "countries/chile.json",
+        "countries/peru.json"
+      ],
+      "Africa": [
+        "countries/morocco.json",
+        "countries/senegal.json",
+        "countries/egypt.json",
+        "countries/somalia.json",
+        "countries/south_africa.json",
+        "countries/madagascar.json"
+      ],
+      "Asia": [
+        "countries/turkey.json",
+        "countries/saudi_arabia.json",
+        "countries/india.json",
+        "countries/china.json",
+        "countries/japan.json",
+        "countries/indonesia.json",
+        "countries/russia.json"
+      ],
+      "Europe": [
+        "countries/iceland.json",
+        "countries/portugal.json",
+        "countries/norway.json",
+        "countries/finland.json",
+        "countries/greece.json",
+        "countries/ukraine.json"
+      ],
+      "Australia": [
+        "countries/australia.json",
+        "countries/new_zealand.json",
+        "countries/papua_new_guinea.json",
+        "countries/fiji.json"
+      ],
+      "Antarctica": []
+    };
+
     let state = JSON.parse(JSON.stringify(initialData));
     let heatLayer;
     let lastSearchCountry = "";
@@ -189,6 +239,20 @@
 
     function numberFmt(value) {
       return new Intl.NumberFormat().format(Math.round(value));
+    }
+
+    async function fetchGeoJson(path) {
+      try {
+        const response = await fetch(path);
+        if (!response.ok) {
+          return null;
+        }
+
+        return await response.json();
+      } catch (error) {
+        console.warn(`Failed to load ${path}:`, error);
+        return null;
+      }
     }
 
     function normalizeGeoName(value) {
@@ -265,6 +329,78 @@
       return outbreakRowsByArea.get(normalizeGeoName(areaName)) || null;
     }
 
+    function extendBoundsFromCoordinates(accumulator, coordinates) {
+      if (!Array.isArray(coordinates) || !coordinates.length) return;
+
+      if (typeof coordinates[0] === "number" && typeof coordinates[1] === "number") {
+        const [lng, lat] = coordinates;
+        accumulator.minLat = Math.min(accumulator.minLat, lat);
+        accumulator.maxLat = Math.max(accumulator.maxLat, lat);
+        accumulator.minLng = Math.min(accumulator.minLng, lng);
+        accumulator.maxLng = Math.max(accumulator.maxLng, lng);
+        return;
+      }
+
+      coordinates.forEach((entry) => extendBoundsFromCoordinates(accumulator, entry));
+    }
+
+    function calculateGeoJsonBounds(geoJson) {
+      const accumulator = {
+        minLat: Infinity,
+        maxLat: -Infinity,
+        minLng: Infinity,
+        maxLng: -Infinity
+      };
+
+      const features = geoJson?.features || [];
+      features.forEach((feature) => {
+        extendBoundsFromCoordinates(accumulator, feature?.geometry?.coordinates);
+      });
+
+      if (!Number.isFinite(accumulator.minLat) || !Number.isFinite(accumulator.minLng)) {
+        return null;
+      }
+
+      return [
+        [accumulator.minLat, accumulator.minLng],
+        [accumulator.maxLat, accumulator.maxLng]
+      ];
+    }
+
+    function mergeBounds(boundsList) {
+      if (!boundsList.length) return null;
+
+      return boundsList.reduce((merged, bounds) => {
+        return [
+          [Math.min(merged[0][0], bounds[0][0]), Math.min(merged[0][1], bounds[0][1])],
+          [Math.max(merged[1][0], bounds[1][0]), Math.max(merged[1][1], bounds[1][1])]
+        ];
+      });
+    }
+
+    async function initializeContinentBounds() {
+      const entries = Object.entries(continentGeoJsonSources);
+
+      await Promise.all(entries.map(async ([continentName, paths]) => {
+        if (!paths.length) return;
+
+        const geoJsonFiles = await Promise.all(paths.map((path) => fetchGeoJson(path)));
+        const bounds = mergeBounds(
+          geoJsonFiles
+            .filter(Boolean)
+            .map((geoJson) => calculateGeoJsonBounds(geoJson))
+            .filter(Boolean)
+        );
+
+        if (!bounds) return;
+
+        continentBounds[continentName] = bounds;
+        if (state[continentName]) {
+          state[continentName].bounds = bounds;
+        }
+      }));
+    }
+
     function getBoundaryStyle(values) {
       const intensity = values ? infectedRate(values.population, values.infected) : 0;
       return {
@@ -293,12 +429,9 @@
 
     async function fetchFirstGeoJson(paths) {
       for (const path of paths) {
-        try {
-          const response = await fetch(path);
-          if (!response.ok) continue;
-          return { data: await response.json(), path };
-        } catch (error) {
-          console.warn(`Failed to load ${path}:`, error);
+        const data = await fetchGeoJson(path);
+        if (data) {
+          return { data, path };
         }
       }
 
@@ -517,11 +650,9 @@
           minOpacity: 0.28,
           max: 1,
           gradient: {
-            0.15: "#1b263b",
-            0.3: "#415a77",
-            0.45: "#778da9",
-            0.6: "#ffba08",
-            0.78: "#f48c06",
+            0.15: "#1f8f3a",
+            0.5: "#f4d03f",
+            0.78: "#ff8c1a",
             1.0: "#d00000"
           }
         }).addTo(map);
@@ -663,6 +794,7 @@
     });
 
     renderHeat();
+    initializeContinentBounds();
     window.parent.postMessage({ type: "MAP_READY" }, "*");
   </script>
 </body>
