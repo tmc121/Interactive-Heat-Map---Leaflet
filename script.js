@@ -89,16 +89,26 @@ $w.onReady(async function () {
   registerSearchEvents();
 
   try {
-    const results = await wixData.query("T-VirusOutbreak").limit(100).find();
+    let results;
+
+    try {
+      results = await wixData.query("T-Virus Outbreak").limit(1000).find();
+    } catch (primaryError) {
+      results = await wixData.query("T-VirusOutbreak").limit(1000).find();
+    }
 
     outbreakData = results.items.map((item) => ({
       nameOfArea: item.nameOfArea,
       population: Number(item.population || 0),
-      infected: Number(item.infected || 0)
+      infected: Number(item.infected || 0),
+      stateCountryContinent: item.stateCountryContinent || "",
+      isState: Boolean(item.isState),
+      isCountry: Boolean(item.isCountry),
+      isContinent: Boolean(item.isContinent)
     }));
 
     sendOutbreakDataToMap();
   } catch (error) {
-    console.error("Failed to load T-VirusOutbreak collection:", error);
+    console.error("Failed to load outbreak collection:", error);
   }
 });

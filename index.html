@@ -364,8 +364,23 @@
       }
     }
 
-    function getOutbreakValues(areaName) {
+    function parseFlag(value) {
+      if (typeof value === "boolean") return value;
+      if (typeof value === "string") {
+        const normalized = value.trim().toLowerCase();
+        return normalized === "true" || normalized === "1" || normalized === "yes";
+      }
+
+      return Boolean(value);
+    }
+
+    function getOutbreakEntry(areaName) {
       return outbreakRowsByArea.get(normalizeGeoName(areaName)) || null;
+    }
+
+    function getOutbreakValues(areaName) {
+      const entry = getOutbreakEntry(areaName);
+      return entry ? entry.values : null;
     }
 
     function extendBoundsFromCoordinates(accumulator, coordinates) {
@@ -578,7 +593,13 @@
       const requestId = ++outbreakBoundaryRequestId;
       const boundaryRows = rows.filter((row) => {
         const areaName = String(row.nameOfArea || "").trim();
-        return areaName && !findContinentName(areaName);
+        if (!areaName) return false;
+
+        const isContinent = parseFlag(row.isContinent);
+        const isCountry = parseFlag(row.isCountry);
+        const isState = parseFlag(row.isState);
+
+        return !isContinent && (isCountry || isState || !findContinentName(areaName));
       });
 
       if (!boundaryRows.length) {
@@ -588,7 +609,8 @@
 
       const resolvedRows = await Promise.all(boundaryRows.map(async (row) => {
         const areaName = String(row.nameOfArea || "").trim();
-        const values = outbreakRowsByArea.get(normalizeGeoName(areaName));
+        const entry = getOutbreakEntry(areaName);
+        const values = entry ? entry.values : null;
         const boundary = await loadAreaBoundaryData(areaName);
 
         if (!boundary || !values) return null;
@@ -596,7 +618,8 @@
         return {
           areaName,
           values,
-          boundary
+          boundary,
+          row
         };
       }));
 
@@ -606,10 +629,21 @@
 
       clearOutbreakBoundaries();
 
-      resolvedRows.filter(Boolean).forEach(({ areaName, values, boundary }) => {
+      resolvedRows.filter(Boolean).forEach(({ areaName, values, boundary, row }) => {
         const details = [];
+        const association = String(row.stateCountryContinent || "").trim();
+        const isState = parseFlag(row.isState);
+        const isCountry = parseFlag(row.isCountry);
 
-        if (boundary.areaType === "state") {
+        if (isState && association) {
+          details.push(`Country: ${association}`);
+        }
+
+        if (isCountry && association) {
+          details.push(`Continent: ${association}`);
+        }
+
+        if (!association && boundary.areaType === "state") {
           const parentCountry = boundary.path.startsWith("states/canada/") ? "Canada" : "United States";
           details.push(`Country: ${parentCountry}`);
         }
@@ -855,24 +889,149 @@
 
       state = JSON.parse(JSON.stringify(initialData));
       outbreakRowsByArea = new Map();
+      const rowsByArea = new Map();
+      const continentDirectTotals = new Map();
+      const countryTotalsByContinent = new Map();
+      const stateTotalsByContinent = new Map();
+      const statesByCountry = new Map();
+      const countriesWithDirectRows = new Set();
+
+      function addTotals(targetMap, key, values) {
+        if (!key) return;
+
+        const current = targetMap.get(key) || { population: 0, infected: 0 };
+        current.population += values.population;
+        current.infected += values.infected;
+        targetMap.set(key, current);
+      }
 
       rows.forEach((row) => {
         const areaName = String(row.nameOfArea || "").trim();
         if (!areaName) return;
 
-        const normalizedAreaName = normalizeGeoName(areaName);
+        const isContinent = parseFlag(row.isContinent);
+        const isCountry = parseFlag(row.isCountry);
+        const isState = parseFlag(row.isState);
+        const association = String(row.stateCountryContinent || "").trim();
         const values = {
           population: Number(row.population || 0),
           infected: Number(row.infected || 0)
         };
 
-        outbreakRowsByArea.set(normalizedAreaName, values);
+        const normalizedAreaName = normalizeGeoName(areaName);
+        const normalizedAssociation = normalizeGeoName(association);
 
-        const continentName = findContinentName(areaName);
-        if (!state[continentName]) return;
+        const entry = {
+          nameOfArea: areaName,
+          normalizedAreaName,
+          normalizedAssociation,
+          values,
+          isContinent,
+          isCountry,
+          isState,
+          stateCountryContinent: association
+        };
 
-        state[continentName].population = values.population;
-        state[continentName].infected = values.infected;
+        rowsByArea.set(normalizedAreaName, entry);
+        outbreakRowsByArea.set(normalizedAreaName, {
+          values,
+          isContinent,
+          isCountry,
+          isState,
+          stateCountryContinent: association
+        });
+      });
+
+      function resolveContinentKey(areaKey, visited = new Set()) {
+        if (!areaKey || visited.has(areaKey)) return "";
+        visited.add(areaKey);
+
+        const entry = rowsByArea.get(areaKey);
+        if (!entry) {
+          const continentName = findContinentName(areaKey);
+          return continentName ? normalizeGeoName(continentName) : "";
+        }
+
+        if (entry.isContinent) return areaKey;
+
+        const parentKey = entry.normalizedAssociation;
+        if (!parentKey) {
+          const fallbackContinent = findContinentName(entry.nameOfArea);
+          return fallbackContinent ? normalizeGeoName(fallbackContinent) : "";
+        }
+
+        if (rowsByArea.has(parentKey)) {
+          return resolveContinentKey(parentKey, visited);
+        }
+
+        const fallbackByAssociation = findContinentName(entry.stateCountryContinent);
+        return fallbackByAssociation ? normalizeGeoName(fallbackByAssociation) : "";
+      }
+
+      rowsByArea.forEach((entry, areaKey) => {
+        if (entry.isContinent) {
+          addTotals(continentDirectTotals, areaKey, entry.values);
+          return;
+        }
+
+        const continentKey = resolveContinentKey(areaKey);
+
+        if (entry.isCountry) {
+          countriesWithDirectRows.add(areaKey);
+          addTotals(countryTotalsByContinent, continentKey, entry.values);
+          return;
+        }
+
+        if (entry.isState) {
+          const parentCountryKey = entry.normalizedAssociation;
+          if (parentCountryKey) {
+            addTotals(statesByCountry, parentCountryKey, entry.values);
+          }
+
+          addTotals(stateTotalsByContinent, continentKey, entry.values);
+          return;
+        }
+
+        // Rows without hierarchy flags are treated as direct continent rows when possible.
+        const inferredContinent = findContinentName(entry.nameOfArea);
+        if (inferredContinent) {
+          addTotals(continentDirectTotals, normalizeGeoName(inferredContinent), entry.values);
+        }
+      });
+
+      Object.keys(state).forEach((continentName) => {
+        const continentKey = normalizeGeoName(continentName);
+        const directContinentTotals = continentDirectTotals.get(continentKey) || { population: 0, infected: 0 };
+        const countryTotals = countryTotalsByContinent.get(continentKey) || { population: 0, infected: 0 };
+        let rolledFromChildren = {
+          population: countryTotals.population,
+          infected: countryTotals.infected
+        };
+
+        // Only use state totals where the parent country does not have its own country row.
+        statesByCountry.forEach((stateTotals, countryKey) => {
+          if (countriesWithDirectRows.has(countryKey)) {
+            return;
+          }
+
+          const parentContinent = resolveContinentKey(countryKey);
+          if (parentContinent !== continentKey) {
+            return;
+          }
+
+          rolledFromChildren.population += stateTotals.population;
+          rolledFromChildren.infected += stateTotals.infected;
+        });
+
+        const hasChildRows = rolledFromChildren.population > 0 || rolledFromChildren.infected > 0;
+
+        // Rule: use direct continent values only when no child country/state rows are attached.
+        const selectedTotals = hasChildRows ? rolledFromChildren : directContinentTotals;
+
+        if (selectedTotals.population > 0 || selectedTotals.infected > 0) {
+          state[continentName].population = selectedTotals.population;
+          state[continentName].infected = selectedTotals.infected;
+        }
       });
 
       renderHeat();
