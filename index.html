@@ -141,16 +141,6 @@
       "Antarctica": { population: 4500, infected: 120, center: [-82, 20], bounds: [[-89, -180], [-60, 180]], country: "Antarctica" }
     };
 
-    const continentShapes = {
-      "North America": [[72,-150],[65,-130],[58,-120],[50,-110],[40,-100],[28,-97],[20,-105],[18,-120],[28,-135],[45,-150]],
-      "South America": [[12,-78],[5,-72],[-8,-68],[-20,-62],[-35,-60],[-50,-68],[-55,-74],[-35,-78],[-12,-80]],
-      "Africa": [[34,-10],[30,10],[22,25],[10,35],[-8,40],[-22,32],[-34,18],[-30,5],[-5,-10],[20,-15]],
-      "Europe": [[70,-10],[65,10],[60,25],[52,35],[44,28],[38,15],[42,0],[50,-8]],
-      "Asia": [[70,35],[65,70],[58,100],[50,125],[40,145],[25,150],[10,120],[8,90],[15,60],[30,40],[45,35]],
-      "Australia": [[-12,113],[-18,128],[-22,140],[-30,151],[-39,146],[-42,130],[-30,116]],
-      "Antarctica": [[-62,-180],[-68,-120],[-72,-60],[-74,0],[-72,60],[-68,120],[-62,180]]
-    };
-
     const continentBounds = {
       "North America": [[15, -170], [83, -50]],
       "South America": [[-58, -92], [15, -30]],
@@ -161,26 +151,14 @@
       "Antarctica": [[-89, -180], [-60, 180]]
     };
 
-    const continentGeoJson = {
-      type: "FeatureCollection",
-      features: Object.entries(continentShapes).map(([name, coords]) => {
-        const ring = coords.map(([lat, lng]) => [lng, lat]);
-
-        return {
-          type: "Feature",
-          properties: { name },
-          geometry: {
-            type: "Polygon",
-            coordinates: [[...ring, ring[0]]]
-          }
-        };
-      })
-    };
-
     let state = JSON.parse(JSON.stringify(initialData));
     let heatLayer;
     let lastSearchCountry = "";
-    let continentGeoJsonLayer;
+    let activeBoundaryLayer;
+    let outbreakBoundaryLayer;
+    let outbreakRowsByArea = new Map();
+    let activeBoundaryContext = null;
+    let outbreakBoundaryRequestId = 0;
 
     const map = L.map("map", {
       zoomControl: false,
@@ -205,26 +183,75 @@
       minZoom: 2
     }).addTo(map);
 
+    outbreakBoundaryLayer = L.layerGroup().addTo(map);
+
     function numberFmt(value) {
       return new Intl.NumberFormat().format(Math.round(value));
     }
 
-    function infectedRate(population, infected) {
-      if (!population || population <= 0) return 0;
-      return infected / population;
+    function normalizeGeoName(value) {
+      return String(value || "")
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .toLowerCase()
+        .replace(/&/g, " and ")
+        .replace(/['’.]/g, "")
+        .replace(/\([^)]*\)/g, " ")
+        .replace(/[^a-z0-9]+/g, "_")
+        .replace(/^_+|_+$/g, "")
+        .replace(/_+/g, "_");
     }
 
-    function uninfected(population, infected) {
-      return Math.max(0, population - infected);
+    function findContinentName(areaName) {
+      const normalized = normalizeGeoName(areaName);
+      return Object.keys(initialData).find((name) => normalizeGeoName(name) === normalized) || "";
     }
 
-    function popupHtml(name, values) {
+    const countryAliases = {
+      united_states: "usa",
+      united_states_of_america: "usa",
+      us: "usa",
+      usa: "usa",
+      united_kingdom: "united_kingdom",
+      uk: "united_kingdom",
+      cote_divoire: "ivory_coast",
+      cote_d_ivoire: "ivory_coast",
+      ivory_coast: "ivory_coast",
+      timor_leste: "east_timor",
+      cabo_verde: "cape_verde",
+      republic_of_the_congo: "congo",
+      democratic_republic_of_the_congo: "democratic_congo",
+      dr_congo: "democratic_congo",
+      congo_kinshasa: "democratic_congo",
+      congo_brazzaville: "congo",
+      czech_republic: "czechia",
+      czechia: "czechia",
+      republic_of_palau: "palau",
+      swaziland: "eswatini",
+      vatican_city: "vatican",
+      holy_see: "vatican",
+      russian_federation: "russia",
+      korea_north: "north_korea",
+      north_korea: "north_korea",
+      korea_south: "south_korea",
+      south_korea: "south_korea",
+      palestinian_territories: "palestine",
+      state_of_palestine: "palestine",
+      macedonia: "north_macedonia",
+      myanmar_burma: "myanmar"
+    };
+
+    const stateAliases = {
+      washington_dc: "district_of_columbia",
+      district_of_columbia: "district_of_columbia",
+      dc: "district_of_columbia"
+    };
+
+    function popupStatsHtml(title, values, details = []) {
       const ratePct = infectedRate(values.population, values.infected) * 100;
-      const countryLabel = values.country || lastSearchCountry || "Unknown";
       return `
-        <strong>${name}</strong><br>
-        Continent: ${name}<br>
-        Country: ${countryLabel}<br>
+        <strong>${title}</strong><br>
+        ${details.filter(Boolean).join("<br>")}${details.length ? "<br>" : ""}
         Population: ${numberFmt(values.population)}<br>
         Infected: ${numberFmt(values.infected)}<br>
         Uninfected: ${numberFmt(uninfected(values.population, values.infected))}<br>
@@ -232,49 +259,126 @@
       `;
     }
 
-    function buildHeatPoints() {
-      const points = [];
-
-      Object.entries(state).forEach(([name, values]) => {
-        const coords = continentShapes[name];
-        if (!coords) return;
-
-        const intensity = infectedRate(values.population, values.infected);
-        const normalized = Math.max(0.15, Math.min(intensity / 0.08, 1));
-
-        coords.forEach(([lat, lng]) => {
-          points.push([lat, lng, normalized * 0.75]);
-        });
-
-        points.push([values.center[0], values.center[1], Math.max(0.25, normalized)]);
-      });
-
-      return points;
+    function getOutbreakValues(areaName) {
+      return outbreakRowsByArea.get(normalizeGeoName(areaName)) || null;
     }
 
-    function renderGeographyLayer() {
-      if (continentGeoJsonLayer) {
-        map.removeLayer(continentGeoJsonLayer);
+    function getBoundaryStyle(values) {
+      const intensity = values ? infectedRate(values.population, values.infected) : 0;
+      return {
+        color: "#CC0000",
+        weight: values ? 2 : 1.6,
+        opacity: 0.95,
+        fillColor: "#700000",
+        fillOpacity: values ? Math.max(0.12, Math.min(0.48, intensity * 3.5)) : 0.08
+      };
+    }
+
+    function clearActiveBoundary() {
+      if (activeBoundaryLayer) {
+        map.removeLayer(activeBoundaryLayer);
+        activeBoundaryLayer = null;
       }
 
-      continentGeoJsonLayer = L.geoJSON(continentGeoJson, {
-        style(feature) {
-          const values = state[feature.properties.name];
-          const intensity = infectedRate(values.population, values.infected);
+      activeBoundaryContext = null;
+    }
 
-          return {
-            color: "#CC0000",
-            weight: 1.5,
-            opacity: 0.9,
-            fillColor: "#700000",
-            fillOpacity: Math.max(0.1, Math.min(0.38, intensity * 2.5))
-          };
-        },
+    function clearOutbreakBoundaries() {
+      if (outbreakBoundaryLayer) {
+        outbreakBoundaryLayer.clearLayers();
+      }
+    }
+
+    async function fetchFirstGeoJson(paths) {
+      for (const path of paths) {
+        try {
+          const response = await fetch(path);
+          if (!response.ok) continue;
+          return { data: await response.json(), path };
+        } catch (error) {
+          console.warn(`Failed to load ${path}:`, error);
+        }
+      }
+
+      return null;
+    }
+
+    function buildCountryCandidates(countryName) {
+      const normalized = normalizeGeoName(countryName);
+      const alias = countryAliases[normalized];
+      return [...new Set([alias, normalized].filter(Boolean))].map((slug) => `countries/${slug}.json`);
+    }
+
+    function buildStateCandidates(countrySlug, stateName) {
+      if (!countrySlug || !stateName) return [];
+
+      const normalized = normalizeGeoName(stateName);
+      const alias = stateAliases[normalized];
+
+      return [...new Set([alias, normalized].filter(Boolean))].map(
+        (slug) => `states/${countrySlug}/${slug}.json`
+      );
+    }
+
+    function buildAreaCandidates(areaName) {
+      const normalized = normalizeGeoName(areaName);
+      const countryAlias = countryAliases[normalized];
+      const stateAlias = stateAliases[normalized];
+      const countryCandidates = [...new Set([countryAlias, normalized].filter(Boolean))].map(
+        (slug) => `countries/${slug}.json`
+      );
+      const stateCandidates = [...new Set([stateAlias, normalized].filter(Boolean))].flatMap((slug) => [
+        `states/usa/${slug}.json`,
+        `states/canada/${slug}.json`
+      ]);
+
+      return [...countryCandidates, ...stateCandidates];
+    }
+
+    async function loadBoundaryData(countryName, stateName) {
+      const countryPaths = buildCountryCandidates(countryName);
+      const countryMatch = await fetchFirstGeoJson(countryPaths);
+
+      if (!countryMatch) return null;
+
+      const countrySlug = countryMatch.path.split("/").pop().replace(/\.json$/, "");
+      const statePaths = buildStateCandidates(countrySlug, stateName);
+      const stateMatch = statePaths.length ? await fetchFirstGeoJson(statePaths) : null;
+
+      return {
+        countryGeoJson: countryMatch.data,
+        stateGeoJson: stateMatch ? stateMatch.data : null,
+        countrySlug,
+        countryPath: countryMatch.path,
+        statePath: stateMatch ? stateMatch.path : ""
+      };
+    }
+
+    async function loadAreaBoundaryData(areaName) {
+      const match = await fetchFirstGeoJson(buildAreaCandidates(areaName));
+      if (!match) return null;
+
+      const pathParts = match.path.split("/");
+      const areaType = pathParts[0] === "countries" ? "country" : "state";
+      const countrySlug = areaType === "state" ? pathParts[1] : pathParts[0];
+
+      return {
+        areaType,
+        geoJson: match.data,
+        path: match.path,
+        countrySlug
+      };
+    }
+
+    function renderBoundaryLayer(geoJson, label, values, details = []) {
+      activeBoundaryLayer = L.geoJSON(geoJson, {
+        style: () => getBoundaryStyle(values),
         onEachFeature(feature, layer) {
-          const continentName = feature.properties.name;
-          const values = state[continentName];
+          const popupContent = values
+            ? popupStatsHtml(label, values, details)
+            : `<strong>${label}</strong><br>${details.filter(Boolean).join("<br>")}`;
 
-          layer.bindPopup(popupHtml(continentName, values), {
+          layer.bindPopup(popupContent, {
             closeButton: false,
             autoPan: false
           });
@@ -288,6 +392,114 @@
           });
         }
       }).addTo(map);
+
+      map.fitBounds(activeBoundaryLayer.getBounds(), { padding: [20, 20] });
+    }
+
+    function buildBoundaryGeoJsonLayer(geoJson, label, values, details = []) {
+      return L.geoJSON(geoJson, {
+        style: () => getBoundaryStyle(values),
+        onEachFeature(feature, layer) {
+          const popupContent = popupStatsHtml(label, values, details);
+
+          layer.bindPopup(popupContent, {
+            closeButton: false,
+            autoPan: false
+          });
+
+          layer.on("mouseover", function () {
+            this.openPopup();
+          });
+
+          layer.on("click", function () {
+            this.openPopup();
+          });
+        }
+      });
+    }
+
+    async function renderOutbreakBoundaries(rows) {
+      const requestId = ++outbreakBoundaryRequestId;
+      const boundaryRows = rows.filter((row) => {
+        const areaName = String(row.nameOfArea || "").trim();
+        return areaName && !findContinentName(areaName);
+      });
+
+      if (!boundaryRows.length) {
+        clearOutbreakBoundaries();
+        return;
+      }
+
+      const resolvedRows = await Promise.all(boundaryRows.map(async (row) => {
+        const areaName = String(row.nameOfArea || "").trim();
+        const values = outbreakRowsByArea.get(normalizeGeoName(areaName));
+        const boundary = await loadAreaBoundaryData(areaName);
+
+        if (!boundary || !values) return null;
+
+        return {
+          areaName,
+          values,
+          boundary
+        };
+      }));
+
+      if (requestId !== outbreakBoundaryRequestId) {
+        return;
+      }
+
+      clearOutbreakBoundaries();
+
+      resolvedRows.filter(Boolean).forEach(({ areaName, values, boundary }) => {
+        const details = [];
+
+        if (boundary.areaType === "state") {
+          const parentCountry = boundary.path.startsWith("states/canada/") ? "Canada" : "United States";
+          details.push(`Country: ${parentCountry}`);
+        }
+
+        buildBoundaryGeoJsonLayer(boundary.geoJson, areaName, values, details).addTo(outbreakBoundaryLayer);
+      });
+    }
+
+    function infectedRate(population, infected) {
+      if (!population || population <= 0) return 0;
+      return infected / population;
+    }
+
+    function uninfected(population, infected) {
+      return Math.max(0, population - infected);
+    }
+
+    function popupHtml(name, values) {
+      const countryLabel = values.country || lastSearchCountry || "Unknown";
+      return popupStatsHtml(name, values, [`Continent: ${name}`, `Country: ${countryLabel}`]);
+    }
+
+    function buildHeatPoints() {
+      const points = [];
+
+      Object.entries(state).forEach(([name, values]) => {
+        const intensity = infectedRate(values.population, values.infected);
+        const normalized = Math.max(0.15, Math.min(intensity / 0.08, 1));
+
+        points.push([values.center[0], values.center[1], Math.max(0.25, normalized)]);
+      });
+
+      return points;
+    }
+
+    function renderGeographyLayer() {
+      if (!activeBoundaryContext) return;
+
+      const boundaryContext = activeBoundaryContext;
+
+      clearActiveBoundary();
+
+      if (!boundaryContext.geoJson) return;
+
+      activeBoundaryContext = boundaryContext;
+      boundaryContext.replay();
     }
 
     function renderHeat() {
@@ -325,6 +537,7 @@
       );
 
       if (continentMatch) {
+        clearActiveBoundary();
         map.fitBounds(continentBounds[continentMatch], { padding: [20, 20] });
         lastSearchCountry = "";
         return;
@@ -345,9 +558,36 @@
 
         if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
 
-        lastSearchCountry = place.address?.country || "";
+        const countryName = place.address?.country || "";
+        const stateName = place.address?.state || place.address?.province || place.address?.region || "";
+        const boundary = await loadBoundaryData(countryName, stateName);
 
-        map.flyTo([lat, lon], 5, { duration: 1.5 });
+        lastSearchCountry = countryName;
+        clearActiveBoundary();
+
+        if (boundary?.stateGeoJson) {
+          const stateValues = getOutbreakValues(stateName);
+          activeBoundaryContext = {
+            geoJson: boundary.stateGeoJson,
+            replay() {
+              renderBoundaryLayer(boundary.stateGeoJson, stateName || normalized, stateValues, [
+                `Country: ${countryName || "Unknown"}`
+              ]);
+            }
+          };
+          activeBoundaryContext.replay();
+        } else if (boundary?.countryGeoJson) {
+          const countryValues = getOutbreakValues(countryName);
+          activeBoundaryContext = {
+            geoJson: boundary.countryGeoJson,
+            replay() {
+              renderBoundaryLayer(boundary.countryGeoJson, countryName || normalized, countryValues);
+            }
+          };
+          activeBoundaryContext.replay();
+        } else {
+          map.flyTo([lat, lon], 5, { duration: 1.5 });
+        }
 
         L.popup({
           closeButton: false,
@@ -357,7 +597,7 @@
           .setLatLng([lat, lon])
           .setContent(`
             <strong>${normalized}</strong><br>
-            ${place.address?.country || ""}
+            ${stateName ? `${stateName}, ` : ""}${countryName}
           `)
           .openOn(map);
 
@@ -370,16 +610,29 @@
       if (!Array.isArray(rows)) return;
 
       state = JSON.parse(JSON.stringify(initialData));
+      outbreakRowsByArea = new Map();
 
       rows.forEach((row) => {
-        const continentName = row.nameOfArea;
+        const areaName = String(row.nameOfArea || "").trim();
+        if (!areaName) return;
+
+        const normalizedAreaName = normalizeGeoName(areaName);
+        const values = {
+          population: Number(row.population || 0),
+          infected: Number(row.infected || 0)
+        };
+
+        outbreakRowsByArea.set(normalizedAreaName, values);
+
+        const continentName = findContinentName(areaName);
         if (!state[continentName]) return;
 
-        state[continentName].population = Number(row.population || 0);
-        state[continentName].infected = Number(row.infected || 0);
+        state[continentName].population = values.population;
+        state[continentName].infected = values.infected;
       });
 
       renderHeat();
+      renderOutbreakBoundaries(rows);
     }
 
     document.getElementById("searchBtn").addEventListener("click", () => {
@@ -408,6 +661,7 @@
     });
 
     renderHeat();
+    window.parent.postMessage({ type: "MAP_READY" }, "*");
   </script>
 </body>
 </html>

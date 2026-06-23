@@ -25,51 +25,80 @@ const WORLD_MAP_SECTION_iFRAME_ANALYTICS_CONTAINER_4_TEXT = $w('#worldMapSection
 const WORLD_MAP_SECTION_iFRAME_STATUSCONTAINER = $w('#worldMapSection-iFrame-StatusContainer');
 const WORLD_MAP_SECTION_iFRAME_STATUSCONTAINER_TEXT = $w('#worldMapSection-iFrame-StatusContainer-Text');
 
+let outbreakData = [];
+let mapIsReady = false;
 
+function postToMapFrame(message) {
+  if (!mapIsReady) {
+    return;
+  }
+
+  WORLD_MAP_SECTION_iFRAME.postMessage(message);
+}
+
+function sendOutbreakDataToMap() {
+  postToMapFrame({
+    type: 'OUTBREAK_DATA',
+    payload: outbreakData,
+  });
+}
+
+function sendSearchToMap() {
+  const query = String(WORLD_MAP_SECTION_SEARCH_INPUT.value || '').trim();
+
+  if (!query) {
+    return;
+  }
+
+  postToMapFrame({
+    type: 'SET_LOCATION',
+    payload: query,
+  });
+}
+
+function registerIframeEvents() {
+  WORLD_MAP_SECTION_iFRAME.onMessage((event) => {
+    const message = event.data;
+
+    if (!message || typeof message !== 'object') {
+      return;
+    }
+
+    if (message.type === 'MAP_READY') {
+      mapIsReady = true;
+      sendOutbreakDataToMap();
+      sendSearchToMap();
+    }
+  });
+}
+
+function registerSearchEvents() {
+  WORLD_MAP_SECTION_TOPACTIONBUTTONS_ACTION1_BUTTON.onClick(() => {
+    sendSearchToMap();
+  });
+
+  WORLD_MAP_SECTION_SEARCH_INPUT.onKeyPress((event) => {
+    if (event.key === 'Enter') {
+      sendSearchToMap();
+    }
+  });
+}
 
 $w.onReady(async function () {
+  registerIframeEvents();
+  registerSearchEvents();
+
   try {
     const results = await wixData.query("T-VirusOutbreak").limit(100).find();
 
-    const outbreakData = results.items.map((item) => ({
+    outbreakData = results.items.map((item) => ({
       nameOfArea: item.nameOfArea,
       population: Number(item.population || 0),
       infected: Number(item.infected || 0)
     }));
-	
 
-    WORLD_MAP_SECTION_iFRAME.postMessage({
-      type: "OUTBREAK_DATA",
-      payload: outbreakData,
-	  
-    });
+    sendOutbreakDataToMap();
   } catch (error) {
     console.error("Failed to load T-VirusOutbreak collection:", error);
   }
 });
-
-function renderHeat() {
-  const heatPoints = buildHeatPoints();
-
-  if (heatLayer) {
-    heatLayer.setLatLngs(heatPoints);
-  } else {
-    heatLayer = L.heatLayer(heatPoints, {
-      radius: 42,
-      blur: 32,
-      maxZoom: 5,
-      minOpacity: 0.28,
-      max: 1,
-      gradient: {
-        0.15: "#1b263b",
-        0.3: "#415a77",
-        0.45: "#778da9",
-        0.6: "#ffba08",
-        0.78: "#f48c06",
-        1.0: "#d00000"
-      }
-    }).addTo(map);
-  }
-
-  renderTooltips();
-}
