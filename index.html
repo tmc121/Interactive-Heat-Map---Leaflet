@@ -163,7 +163,9 @@
     const map = L.map("map", {
       zoomControl: false,
       scrollWheelZoom: true,
-      attributionControl: false
+      attributionControl: false,
+      minZoom: 2,
+      maxZoom: 19
     }).setView([18, 10], 2);
 
     const labelsPane = map.getPane("labels") || map.createPane("labels");
@@ -172,14 +174,14 @@
 
     L.tileLayer("https://{s}.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}.png", {
       subdomains: "abcd",
-      maxZoom: 6,
+      maxZoom: 19,
       minZoom: 2
     }).addTo(map);
 
     L.tileLayer("https://{s}.basemaps.cartocdn.com/light_only_labels/{z}/{x}/{y}.png", {
       subdomains: "abcd",
       pane: "labels",
-      maxZoom: 6,
+      maxZoom: 19,
       minZoom: 2
     }).addTo(map);
 
