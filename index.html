@@ -180,7 +180,6 @@
     let state = JSON.parse(JSON.stringify(initialData));
     let heatLayer;
     let lastSearchCountry = "";
-    const tooltipMarkers = [];
     let continentGeoJsonLayer;
 
     const map = L.map("map", {
@@ -291,38 +290,6 @@
       }).addTo(map);
     }
 
-    function clearTooltipMarkers() {
-      tooltipMarkers.forEach(marker => map.removeLayer(marker));
-      tooltipMarkers.length = 0;
-    }
-
-    function renderTooltips() {
-      clearTooltipMarkers();
-
-      Object.entries(state).forEach(([name, values]) => {
-        const marker = L.circleMarker(values.center, {
-          radius: 18,
-          stroke: false,
-          fillOpacity: 0
-        }).addTo(map);
-
-        marker.bindPopup(popupHtml(name, values), {
-          closeButton: false,
-          autoPan: false
-        });
-
-        marker.on("mouseover", function () {
-          this.openPopup();
-        });
-
-        marker.on("click", function () {
-          this.openPopup();
-        });
-
-        tooltipMarkers.push(marker);
-      });
-    }
-
     function renderHeat() {
       const heatPoints = buildHeatPoints();
 
@@ -347,7 +314,6 @@
       }
 
       renderGeographyLayer();
-      renderTooltips();
     }
 
     async function searchLocation(query) {
