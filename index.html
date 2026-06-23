@@ -132,13 +132,13 @@
 
   <script>
     const initialData = {
-      "North America": { population: 604000000, infected: 8200000, center: [54, -105], bounds: [[15, -170], [83, -50]], country: "Multiple" },
-      "South America": { population: 439000000, infected: 5100000, center: [-15, -60], bounds: [[-58, -92], [15, -30]], country: "Multiple" },
-      "Africa": { population: 1460000000, infected: 9100000, center: [3, 21], bounds: [[-35, -20], [38, 52]], country: "Multiple" },
-      "Asia": { population: 4780000000, infected: 28600000, center: [34, 96], bounds: [[5, 25], [78, 180]], country: "Multiple" },
-      "Europe": { population: 748000000, infected: 6400000, center: [54, 15], bounds: [[35, -12], [72, 40]], country: "Multiple" },
-      "Australia": { population: 46000000, infected: 240000, center: [-25, 134], bounds: [[-47, 110], [-9, 179]], country: "Australia" },
-      "Antarctica": { population: 4500, infected: 120, center: [-82, 20], bounds: [[-89, -180], [-60, 180]], country: "Antarctica" }
+      "North America": { population: 0, infected: 0, center: [54, -105], bounds: [[15, -170], [83, -50]], country: "Multiple" },
+      "South America": { population: 0, infected: 0, center: [-15, -60], bounds: [[-58, -92], [15, -30]], country: "Multiple" },
+      "Africa": { population: 0, infected: 0, center: [3, 21], bounds: [[-35, -20], [38, 52]], country: "Multiple" },
+      "Asia": { population: 0, infected: 0, center: [34, 96], bounds: [[5, 25], [78, 180]], country: "Multiple" },
+      "Europe": { population: 0, infected: 0, center: [54, 15], bounds: [[35, -12], [72, 40]], country: "Multiple" },
+      "Australia": { population: 0, infected: 0, center: [-25, 134], bounds: [[-47, 110], [-9, 179]], country: "Australia" },
+      "Antarctica": { population: 0, infected: 0, center: [-82, 20], bounds: [[-89, -180], [-60, 180]], country: "Antarctica" }
     };
 
     const continentBounds = {
@@ -694,6 +694,10 @@
         return [];
       }
 
+      if (!Number.isFinite(values.population) || values.population <= 0 || !Number.isFinite(values.infected) || values.infected <= 0) {
+        return [];
+      }
+
       const [[south, west], [north, east]] = bounds;
       const latSpan = Math.max(4, north - south);
       const lngSpan = Math.max(4, east - west);
@@ -892,7 +896,6 @@
       const rowsByArea = new Map();
       const continentDirectTotals = new Map();
       const countryTotalsByContinent = new Map();
-      const stateTotalsByContinent = new Map();
       const statesByCountry = new Map();
       const countriesWithDirectRows = new Set();
 
@@ -987,15 +990,7 @@
           if (parentCountryKey) {
             addTotals(statesByCountry, parentCountryKey, entry.values);
           }
-
-          addTotals(stateTotalsByContinent, continentKey, entry.values);
           return;
-        }
-
-        // Rows without hierarchy flags are treated as direct continent rows when possible.
-        const inferredContinent = findContinentName(entry.nameOfArea);
-        if (inferredContinent) {
-          addTotals(continentDirectTotals, normalizeGeoName(inferredContinent), entry.values);
         }
       });
 
