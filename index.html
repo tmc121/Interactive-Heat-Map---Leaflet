@@ -161,10 +161,27 @@
       "Antarctica": [[-89, -180], [-60, 180]]
     };
 
+    const continentGeoJson = {
+      type: "FeatureCollection",
+      features: Object.entries(continentShapes).map(([name, coords]) => {
+        const ring = coords.map(([lat, lng]) => [lng, lat]);
+
+        return {
+          type: "Feature",
+          properties: { name },
+          geometry: {
+            type: "Polygon",
+            coordinates: [[...ring, ring[0]]]
+          }
+        };
+      })
+    };
+
     let state = JSON.parse(JSON.stringify(initialData));
     let heatLayer;
     let lastSearchCountry = "";
     const tooltipMarkers = [];
+    let continentGeoJsonLayer;
 
     const map = L.map("map", {
       zoomControl: false,
@@ -172,7 +189,19 @@
       attributionControl: false
     }).setView([18, 10], 2);
 
-    L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    const labelsPane = map.getPane("labels") || map.createPane("labels");
+    labelsPane.style.zIndex = "650";
+    labelsPane.style.pointerEvents = "none";
+
+    L.tileLayer("https://{s}.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}.png", {
+      subdomains: "abcd",
+      maxZoom: 6,
+      minZoom: 2
+    }).addTo(map);
+
+    L.tileLayer("https://{s}.basemaps.cartocdn.com/light_only_labels/{z}/{x}/{y}.png", {
+      subdomains: "abcd",
+      pane: "labels",
       maxZoom: 6,
       minZoom: 2
     }).addTo(map);
@@ -222,6 +251,44 @@
       });
 
       return points;
+    }
+
+    function renderGeographyLayer() {
+      if (continentGeoJsonLayer) {
+        map.removeLayer(continentGeoJsonLayer);
+      }
+
+      continentGeoJsonLayer = L.geoJSON(continentGeoJson, {
+        style(feature) {
+          const values = state[feature.properties.name];
+          const intensity = infectedRate(values.population, values.infected);
+
+          return {
+            color: "#CC0000",
+            weight: 1.5,
+            opacity: 0.9,
+            fillColor: "#700000",
+            fillOpacity: Math.max(0.1, Math.min(0.38, intensity * 2.5))
+          };
+        },
+        onEachFeature(feature, layer) {
+          const continentName = feature.properties.name;
+          const values = state[continentName];
+
+          layer.bindPopup(popupHtml(continentName, values), {
+            closeButton: false,
+            autoPan: false
+          });
+
+          layer.on("mouseover", function () {
+            this.openPopup();
+          });
+
+          layer.on("click", function () {
+            this.openPopup();
+          });
+        }
+      }).addTo(map);
     }
 
     function clearTooltipMarkers() {
@@ -279,6 +346,7 @@
         }).addTo(map);
       }
 
+      renderGeographyLayer();
       renderTooltips();
     }
 
@@ -334,6 +402,8 @@
 
     function applyWixCollectionData(rows) {
       if (!Array.isArray(rows)) return;
+
+      state = JSON.parse(JSON.stringify(initialData));
 
       rows.forEach((row) => {
         const continentName = row.nameOfArea;
